@@ -1,0 +1,17 @@
+# Python
+__pycache__/
+*.py[cod]
+*.pyo
+*.pyd
+.Python
+venv/
+.venv/
+*.egg-info/
+
+# Environment & secrets
+.env
+tokens.json
+
+# Editor
+.vscode/
+*.swp

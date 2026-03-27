@@ -1,0 +1,17 @@
+# MCP SDK — Streamable-HTTP server with auth support
+mcp[cli]>=1.6.0
+
+# CalDAV client (Nextcloud)
+caldav>=1.3.9
+
+# iCalendar (VEVENT / VTODO generation)
+icalendar>=5.0.0
+
+# Environment variable loading
+python-dotenv>=1.0.0
+
+# ASGI server (used internally by mcp.run())
+uvicorn[standard]>=0.29.0
+
+# Structured logging with rotation
+loguru>=0.7.0

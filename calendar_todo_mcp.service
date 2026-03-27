@@ -1,0 +1,37 @@
+[Unit]
+Description=Nextcloud CalDAV MCP Server
+Documentation=https://github.com/modelcontextprotocol/python-sdk
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=root
+Group=root
+
+# Adjust this path if you installed elsewhere
+WorkingDirectory=/root/calendar_todo_mcp
+
+# Use the virtual-environment Python directly
+ExecStart=/root/calendar_todo_mcp/venv/bin/python3 server.py
+
+# Load environment from .env file
+EnvironmentFile=/root/calendar_todo_mcp/.env
+
+# Restart policy
+Restart=on-failure
+RestartSec=5s
+
+# Security hardening
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ReadWritePaths=/root/calendar_todo_mcp/ /var/log/
+
+# Logging goes to journald
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=calendar-todo-mcp
+
+[Install]
+WantedBy=multi-user.target

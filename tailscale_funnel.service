@@ -1,0 +1,12 @@
+[Unit]
+Description=Tailscale Funnel for MCP Server
+After=tailscaled.service
+Requires=tailscaled.service
+
+[Service]
+Type=simple
+ExecStart=/usr/bin/tailscale funnel --bg 8000
+Restart=on-failure
+
+[Install]
+WantedBy=multi-user.target
