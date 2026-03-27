@@ -97,8 +97,9 @@ Anmelden mit deinem Tailscale-Account im Browser, wenn der Link erscheint.
 Tailscale Funnel macht den Server über das öffentliche Internet erreichbar —
 nötig, damit Claude.ai (Cloud) den MCP-Server erreichen kann.
 
+Der mitgelieferte `tailscale_funnel.service` startet den Funnel automatisch beim Booten (siehe Schritt 5). Zum Testen vorab:
+
 ```bash
-# Einmalig einrichten — Konfiguration bleibt nach Reboot erhalten
 tailscale funnel 8000
 ```
 
@@ -118,17 +119,26 @@ Diesen HTTPS-Hostnamen (z.B. `https://mymachine.tail-abc123.ts.net`) als
 
 ---
 
-## 5 — Install and start the systemd service
+## 5 — Install and start the systemd services
+
+Both service files need to be copied and enabled: the MCP server and the Tailscale Funnel.
 
 ```bash
+# MCP server
 cp /root/calendar_todo_mcp/calendar_todo_mcp.service \
    /etc/systemd/system/calendar-todo-mcp.service
 
+# Tailscale Funnel (keeps the funnel running across reboots)
+cp /root/calendar_todo_mcp/tailscale_funnel.service \
+   /etc/systemd/system/tailscale-funnel-mcp.service
+
 systemctl daemon-reload
 systemctl enable --now calendar-todo-mcp
+systemctl enable --now tailscale-funnel-mcp
 
-# Verify it started
+# Verify both are running
 systemctl status calendar-todo-mcp
+systemctl status tailscale-funnel-mcp
 journalctl -u calendar-todo-mcp -f
 ```
 
