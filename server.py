@@ -11,6 +11,9 @@ Exposes tools over HTTPS (Streamable-HTTP transport):
   • update_event(uid)   → patches a Claude-created event
   • update_todo(uid)    → patches a Claude-created todo
 
+Recurring events are supported via RRULE (daily/weekly/monthly/yearly) with
+optional interval, byday, until, and count parameters.
+
 All Claude-created entries are tagged with X-CLAUDE-CREATED:TRUE.
 delete/update refuse to touch entries without that tag.
 
@@ -171,6 +174,71 @@ def _set_or_add(component, key: str, value) -> None:
     component.add(key, value)
 
 
+# ── Recurrence helper ──────────────────────────────────────────────────────────
+_FREQ_MAP: dict[str, str] = {
+    "daily": "DAILY",
+    "weekly": "WEEKLY",
+    "monthly": "MONTHLY",
+    "yearly": "YEARLY",
+    "annual": "YEARLY",
+}
+
+_BYDAY_MAP: dict[str, str] = {
+    "mo": "MO", "mon": "MO", "monday": "MO",
+    "tu": "TU", "tue": "TU", "tuesday": "TU",
+    "we": "WE", "wed": "WE", "wednesday": "WE",
+    "th": "TH", "thu": "TH", "thursday": "TH",
+    "fr": "FR", "fri": "FR", "friday": "FR",
+    "sa": "SA", "sat": "SA", "saturday": "SA",
+    "su": "SU", "sun": "SU", "sunday": "SU",
+}
+
+
+def _build_rrule(
+    freq: str,
+    interval: int = 1,
+    byday: str | None = None,
+    until: str | None = None,
+    count: int | None = None,
+) -> dict:
+    """Build an icalendar RRULE dict from friendly parameters."""
+    freq_upper = _FREQ_MAP.get(freq.strip().lower())
+    if not freq_upper:
+        raise ValueError(
+            f"Unbekannte Wiederholungsfrequenz: {freq!r}. "
+            f"Erlaubt: daily, weekly, monthly, yearly"
+        )
+
+    rule: dict = {"FREQ": freq_upper}
+
+    if interval > 1:
+        rule["INTERVAL"] = interval
+
+    if byday:
+        days = []
+        for raw in byday.replace(" ", "").split(","):
+            mapped = _BYDAY_MAP.get(raw.strip().lower())
+            if not mapped:
+                raise ValueError(
+                    f"Unbekannter Wochentag: {raw!r}. "
+                    f"Erlaubt: MO, TU, WE, TH, FR, SA, SU"
+                )
+            days.append(mapped)
+        rule["BYDAY"] = days
+
+    if until and count:
+        raise ValueError(
+            "'recurrence_until' und 'recurrence_count' koennen nicht gleichzeitig gesetzt werden."
+        )
+
+    if until:
+        rule["UNTIL"] = _parse_dt(until)
+    if count is not None:
+        rule["COUNT"] = count
+
+    return rule
+
+
 def _assert_claude_created(component) -> None:
     """Raise ValueError if X-CLAUDE-CREATED is not TRUE."""
     val = component.get(_CLAUDE_PROP)
@@ -268,6 +336,11 @@ def _create_event_in_calendar(
     dtstart: str,
     dtend: str,
     description: str,
+    recurrence: str | None = None,
+    recurrence_interval: int = 1,
+    recurrence_byday: str | None = None,
+    recurrence_until: str | None = None,
+    recurrence_count: int | None = None,
 ) -> str:
     """Shared implementation for create_event and create_family_event."""
     uid = str(uuid.uuid4())
@@ -281,13 +354,21 @@ def _create_event_in_calendar(
     event.add("dtend", _parse_dt(dtend))
     if description:
         event.add("description", description)
+    if recurrence:
+        event.add("rrule", _build_rrule(
+            recurrence, recurrence_interval, recurrence_byday,
+            recurrence_until, recurrence_count,
+        ))
     event.add(_CLAUDE_PROP, vText(_CLAUDE_VALUE))
     _add_alarms(event, title, dt_start)
     cal.add_component(event)
 
     client = _caldav_client()
     _get_calendar(client, cal_name).save_event(cal.to_ical().decode())
-    logger.info(f"create_event OK cal={cal_name!r} uid={uid!r} title={title!r}")
+    logger.info(
+        f"create_event OK cal={cal_name!r} uid={uid!r} "
+        f"title={title!r} recurrence={recurrence!r}"
+    )
     return f"Event '{title}' created successfully (UID: {uid})"
 
 
@@ -298,24 +379,43 @@ def create_event(
     dtstart: str,
     dtend: str,
     description: str = "",
+    recurrence: str | None = None,
+    recurrence_interval: int = 1,
+    recurrence_byday: str | None = None,
+    recurrence_until: str | None = None,
+    recurrence_count: int | None = None,
 ) -> str:
     """Create a calendar event in the personal Nextcloud Calendar.
 
     Args:
-        title:       Event title (SUMMARY field).
-        dtstart:     Start datetime in ISO 8601.
-                     Timed:   "2026-03-26T14:00:00" or "2026-03-26T14:00:00+01:00"
-                     All-day: "2026-03-26"
-        dtend:       End datetime in ISO 8601 (same format as dtstart).
-                     For all-day events use the exclusive next day:
-                     dtstart="2026-03-26" -> dtend="2026-03-27"
-        description: Optional free-text description.
+        title:               Event title (SUMMARY field).
+        dtstart:             Start datetime in ISO 8601.
+                             Timed:   "2026-03-26T14:00:00" or "2026-03-26T14:00:00+01:00"
+                             All-day: "2026-03-26"
+        dtend:               End datetime in ISO 8601 (same format as dtstart).
+                             For all-day events use the exclusive next day:
+                             dtstart="2026-03-26" -> dtend="2026-03-27"
+        description:         Optional free-text description.
+        recurrence:          Recurrence frequency: "daily", "weekly", "monthly", "yearly".
+                             Omit for a one-time event.
+        recurrence_interval: Repeat every N periods, e.g. 2 = every 2 weeks (default: 1).
+        recurrence_byday:    Weekdays for weekly recurrence, comma-separated.
+                             E.g. "MO,WE,FR" or "MO,TU,WE,TH,FR" for workdays.
+                             Allowed values: MO, TU, WE, TH, FR, SA, SU.
+        recurrence_until:    End date for recurrence in ISO 8601, e.g. "2026-12-31".
+                             Cannot be combined with recurrence_count.
+        recurrence_count:    Maximum number of occurrences.
+                             Cannot be combined with recurrence_until.
 
     Returns:
         Confirmation message with the generated event UID.
     """
     try:
-        return _create_event_in_calendar(CALENDAR_NAME, title, dtstart, dtend, description)
+        return _create_event_in_calendar(
+            CALENDAR_NAME, title, dtstart, dtend, description,
+            recurrence, recurrence_interval, recurrence_byday,
+            recurrence_until, recurrence_count,
+        )
     except Exception as e:
         return _error_response("create_event", e)
 
@@ -326,20 +426,38 @@ def create_family_event(
     dtstart: str,
     dtend: str,
     description: str = "",
+    recurrence: str | None = None,
+    recurrence_interval: int = 1,
+    recurrence_byday: str | None = None,
+    recurrence_until: str | None = None,
+    recurrence_count: int | None = None,
 ) -> str:
     """Create a calendar event in the family Nextcloud Calendar.
 
     Args:
-        title:       Event title (SUMMARY field).
-        dtstart:     Start datetime in ISO 8601.
-        dtend:       End datetime in ISO 8601.
-        description: Optional free-text description.
+        title:               Event title (SUMMARY field).
+        dtstart:             Start datetime in ISO 8601.
+        dtend:               End datetime in ISO 8601.
+        description:         Optional free-text description.
+        recurrence:          Recurrence frequency: "daily", "weekly", "monthly", "yearly".
+                             Omit for a one-time event.
+        recurrence_interval: Repeat every N periods, e.g. 2 = every 2 weeks (default: 1).
+        recurrence_byday:    Weekdays for weekly recurrence, comma-separated.
+                             E.g. "MO,WE,FR". Allowed: MO, TU, WE, TH, FR, SA, SU.
+        recurrence_until:    End date for recurrence in ISO 8601, e.g. "2026-12-31".
+                             Cannot be combined with recurrence_count.
+        recurrence_count:    Maximum number of occurrences.
+                             Cannot be combined with recurrence_until.
 
     Returns:
         Confirmation message with the generated event UID.
     """
     try:
-        return _create_event_in_calendar(FAMILY_CALENDAR_NAME, title, dtstart, dtend, description)
+        return _create_event_in_calendar(
+            FAMILY_CALENDAR_NAME, title, dtstart, dtend, description,
+            recurrence, recurrence_interval, recurrence_byday,
+            recurrence_until, recurrence_count,
+        )
     except Exception as e:
         return _error_response("create_family_event", e)
 
@@ -434,17 +552,30 @@ def update_event(
     dtstart: str | None = None,
     dtend: str | None = None,
     description: str | None = None,
+    recurrence: str | None = None,
+    recurrence_interval: int = 1,
+    recurrence_byday: str | None = None,
+    recurrence_until: str | None = None,
+    recurrence_count: int | None = None,
+    remove_recurrence: bool = False,
 ) -> str:
     """Update a Claude-created calendar event. Only provided fields are changed.
 
     Only events created by Claude (tagged X-CLAUDE-CREATED) can be updated.
 
     Args:
-        uid:         UID of the event to update.
-        title:       New event title, or None to leave unchanged.
-        dtstart:     New start datetime in ISO 8601, or None to leave unchanged.
-        dtend:       New end datetime in ISO 8601, or None to leave unchanged.
-        description: New description, or None to leave unchanged.
+        uid:               UID of the event to update.
+        title:             New event title, or None to leave unchanged.
+        dtstart:           New start datetime in ISO 8601, or None to leave unchanged.
+        dtend:             New end datetime in ISO 8601, or None to leave unchanged.
+        description:       New description, or None to leave unchanged.
+        recurrence:        New recurrence frequency ("daily", "weekly", "monthly", "yearly").
+                           Replaces the existing RRULE. Use remove_recurrence=True to delete it.
+        recurrence_interval: Interval for the new recurrence rule (default: 1).
+        recurrence_byday:  Weekdays for weekly recurrence, e.g. "MO,WE,FR".
+        recurrence_until:  New end date for recurrence in ISO 8601.
+        recurrence_count:  New max number of occurrences.
+        remove_recurrence: Set True to remove the recurrence rule entirely (make event one-time).
 
     Returns:
         Confirmation message.
@@ -461,6 +592,15 @@ def update_event(
             _set_or_add(component, "dtend", _parse_dt(dtend))
         if description is not None:
             _set_or_add(component, "description", vText(description))
+
+        if remove_recurrence:
+            if "rrule" in component:
+                del component["rrule"]
+        elif recurrence is not None:
+            _set_or_add(component, "rrule", _build_rrule(
+                recurrence, recurrence_interval, recurrence_byday,
+                recurrence_until, recurrence_count,
+            ))
 
         _save_component(obj, component)
         logger.info(f"update_event OK uid={uid!r}")
